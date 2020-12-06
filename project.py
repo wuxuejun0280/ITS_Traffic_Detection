@@ -90,8 +90,8 @@ video = 'traffic.mp4'
 # Open video file
 cap = cv2.VideoCapture(video)
 # Calculate the mean frame for given seconds
-mean_frame = average(cap, 6)
-# Close the video feed
+mean_frame = average(cap, 3)
+# Close the video feed0
 cap.release()
 
 # Re-open the video file
