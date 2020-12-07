@@ -1,0 +1,215 @@
+# Initialisation
+import cv2
+import numpy as np
+import math
+
+
+# Compute absolute colour difference of two images.
+# The two images must have the same size.
+# Return combined absolute difference of the 3 channels
+def absDiff(image1, image2):
+    if image1.shape != image2.shape:
+        print('image size mismatch')
+        return 0
+    else:
+        height, width, dummy = image1.shape
+        # Compute absolute difference.
+        diff = cv2.absdiff(image1, image2)
+        a = cv2.split(diff)
+        # Sum up the differences of the 3 channels with equal weights.
+        # You can change the weights to different values.
+        sum = np.zeros((height, width), dtype=np.uint8)
+        for i in (1, 2, 3):
+            ch = a[i - 1]
+            cv2.addWeighted(ch, 1.0 / i, sum, float(i - 1) / i, gamma=0.0, dst=sum)
+        return sum
+
+
+# Function to extract some features from background with also choosable background color
+# Got some help from https://stackoverflow.com/questions/29810128/opencv-python-set-background-colour/38516242
+
+# def setBackground(image, diff, threshold, bgcolor):
+#     # Getting the right binary mask based on diff array
+#     mask = cv2.threshold(diff, threshold, 1, cv2.THRESH_BINARY)
+#     # Inverse mask to know what pixels to change in background
+#     mask_inv = cv2.bitwise_not(mask[1] * 255) // 255
+#     # Making full size background with given color
+#     background_image = np.full(image.shape, bgcolor, dtype=np.uint8)
+#     # Extracting previously found feature with mask from original image
+#     fg = cv2.bitwise_and(image, image, mask=mask[1])
+#     # Extracting the area which is not in the feature area
+#     bg = cv2.bitwise_and(background_image, background_image, mask=mask_inv)
+#     # Merging background and foreground together
+#     fg_last = cv2.bitwise_or(fg, bg)
+
+def setBackground(image, diff, threshold, bgcolor):
+    retval, mask = cv2.threshold(diff, threshold, 1, cv2.THRESH_BINARY)
+    fg = image.copy()
+    fg[mask < 1] = bgcolor
+    fg[mask >= 1] = (255,255,255)
+    return fg
+
+
+# def setBackground(image, diff, threshold, bgcolor, fgcolor):
+#     retval, mask = cv2.threshold(diff, threshold, 1, cv2.THRESH_BINARY)
+#     fg = image.copy()
+#     fg[mask < 1] = bgcolor
+#     fg[mask >= 1] = fgcolor
+#     return fg
+
+
+    # return fg_last, fg
+
+
+def average(video, sec):
+    # Get the video original frame rate
+    frame_rate = video.get(cv2.CAP_PROP_FPS)
+
+    # Calculate the needed frames to process. Subtract 1 because we take the mean already out before the for-loop
+    if sec == 0:
+        frames_to_read = int(video.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+    else:
+        frames_to_read = int(frame_rate * sec) - 1
+
+    # Read the first frame to mean
+    ret, mean = video.read()
+    # Split to three color channels
+    split_mean = cv2.split(mean)
+
+    # Until given seconds
+    for i in range(0, frames_to_read):
+        ret, frame = video.read()
+
+        # Split the frame to color channels
+        split_frame = cv2.split(frame)
+
+        # Calculate mean for every color channel
+        for j in (0, 1, 2):
+            cv2.addWeighted(split_frame[j], 1.0 / (i + 1), split_mean[j], float(1 - 1 / (i + 1)), gamma=0.0,
+                            dst=split_mean[j])
+
+    # Merge color channels together
+    cv2.merge(split_mean, dst=mean)
+
+    # Save weighted frame
+    cv2.imwrite('weighted.jpg', mean)
+
+    return mean
+
+def filter_mask(img):
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+    # Fill any small holes
+    closing = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
+    # Remove noise
+    opening = cv2.morphologyEx(closing, cv2.MORPH_OPEN, kernel)
+
+    cv2.imshow('car_frame', opening)
+    k = cv2.waitKey(30) & 0xff
+    # Dilate to merge adjacent blobs
+    # dilation = cv2.dilate(opening, kernel, iterations=2)
+
+    # threshold
+    # th = dilation[dilation < 240] = 0
+    # cv2.imshow('frame', opening)
+    # k = cv2.waitKey(30) & 0xff
+    return opening
+
+
+# -----------------------------
+# -----------------------------
+# Main
+
+video = 'traffic.mp4'
+# Open video file
+cap = cv2.VideoCapture(video)
+# Calculate the mean frame for given seconds
+mean_frame = average(cap, 10)
+# Close the video feed0
+cap.release()
+
+# Re-open the video file
+cap = cv2.VideoCapture(video)
+# Open output video file
+out = cv2.VideoWriter('output_of_project.avi', cv2.VideoWriter_fourcc(*'MJPG'), 30.0, (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                                                                int(cap.get(
+                                                                                    cv2.CAP_PROP_FRAME_HEIGHT))))
+# Boolean for saving the first video frame
+first_frame = True
+# For calculating again the GoodFeaturesToTrack
+run = 0
+video_fps = cap.get(cv2.CAP_PROP_FPS)
+while True:
+    ret, frame = cap.read()
+    if not ret:  # If out of frames exit the while loop
+        break
+
+    # Calculate the difference between video frame and the mean frame
+    diff = absDiff(frame, mean_frame)
+    # Set the background of a video frame to green
+    set_bg = setBackground(frame, diff, 70, (0, 0, 0))
+
+    frame = set_bg.copy()
+    car_frame = set_bg.copy()
+    gray_car_frame = cv2.cvtColor(car_frame, cv2.COLOR_BGR2GRAY)
+    gray_car_frame = filter_mask(gray_car_frame)
+    # cv2.imshow('car_frame', gray_car_frame)
+    # k = cv2.waitKey(30) & 0xff
+
+    re, car_threshold = cv2.threshold(gray_car_frame, 50, 1, cv2.THRESH_BINARY)
+
+    # Detect contours. RETR_EXTERNAL should only keep the outer contours
+    contours, hierarchy = cv2.findContours(car_threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Got some help from https://docs.opencv.org/4.4.0/d4/dee/tutorial_optical_flow.html
+    if first_frame:
+        old_gray_car_frame = gray_car_frame  # Copy the first frame and do not detect anything
+        mask = np.zeros_like(car_frame)  # Create mask to draw features
+        corners = cv2.goodFeaturesToTrack(gray_car_frame, 50, 0.07, 15.0, False)  # Use goodFeaturesToTrack to find corners
+    else:
+        # Update the goodFeaturesToTrack at every 90 frames
+        if run < 90:
+            run += 1
+        else:
+            corners = cv2.goodFeaturesToTrack(old_gray_car_frame, 50, 0.07, 15.0, False)
+            run = 0
+
+        # Track previously found features
+        p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray_car_frame, gray_car_frame, corners, None, (3, 3))
+
+        good_new = p1[st == 1]
+        good_old = corners[st == 1]
+
+        # Save the frame as old
+        old_gray_car_frame = gray_car_frame.copy()
+        corners = good_new.reshape(-1, 1, 2)
+
+    # Draw the contours to frame. Drawing the contours after features so contours will be on top layer
+    frame = cv2.drawContours(frame, contours, -1, (255, 0, 0), 1)
+
+    # Draw a box over the contours
+    for i in contours:
+        if cv2.contourArea(i) < 90:  # Area is just empirically tested to be the best at my case
+            continue
+        x, y, w, h = cv2.boundingRect(i)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+
+    # Show the frames
+    cv2.imshow('frame', frame)
+    k = cv2.waitKey(30) & 0xff
+    if k == 27:
+        break
+
+    # Save the background removed and tracked frame to output video
+    out.write(frame)
+
+    # Save the first frame to image
+    if first_frame:
+        cv2.imwrite('first_frame.jpg', frame)
+        first_frame = False
+
+
+# Close both input and output video file
+del out
+del cap
